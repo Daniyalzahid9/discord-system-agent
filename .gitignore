@@ -1,0 +1,45 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+
+# Environment variables & secrets (CRITICAL: NEVER COMMIT)
+.env
+*.env.local
+*.token
+*.key
+*.pem
+
+# Windows SQLite notification temp DBs
+*.db
+*.sqlite
+wpndatabase*.db
+
+# Dynamic runtime downloads and outputs
+discord_downloads/
+output.txt
+*.log
+*.gif
+*.wav
+*.jpg
+*.png
+
+# OS metadata
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE & Editor caches
+.vscode/
+.idea/
+*.swp
+*.swo
