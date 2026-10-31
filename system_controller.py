@@ -163,13 +163,68 @@ def kill_process(target: str) -> tuple[bool, str]:
             return True, f"Terminated {killed} instance(s) of '{target}'"
         return False, f"No running process found matching '{target}'"
 
-def open_path_or_app(target: str) -> tuple[bool, str]:
-    """Opens a file, directory, application, or URL on Windows."""
+def launch_antigravity_ide(workspace: str = None) -> tuple[bool, str]:
+    """Launches the full Antigravity desktop IDE GUI on Windows."""
+    candidates = [
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "antigravity" / "Antigravity.exe",
+        Path(os.environ.get("LOCALAPPDATA", "")) / "Programs" / "Antigravity IDE" / "Antigravity IDE.exe",
+        Path("C:/Users/daniy/AppData/Local/Programs/antigravity/Antigravity.exe"),
+        Path("C:/Users/daniy/AppData/Local/Programs/Antigravity IDE/Antigravity IDE.exe"),
+    ]
+    for exe in candidates:
+        if exe.is_file():
+            try:
+                cmd = f'"{exe}"'
+                if workspace and os.path.isdir(workspace):
+                    cmd += f' "{workspace}"'
+                subprocess.Popen(cmd, shell=True)
+                return True, f"Launched Antigravity IDE ({exe.name})"
+            except Exception as e:
+                return False, f"Failed launching {exe}: {e}"
+    # Fallback to start command
     try:
-        os.startfile(target)
-        return True, f"Opened: {target}"
+        os.system("start antigravity:")
+        return True, "Triggered Antigravity application launcher."
     except Exception as e:
-        return False, f"Failed to open '{target}': {str(e)}"
+        return False, f"Antigravity IDE executable not found: {e}"
+
+def open_path_or_app(target: str) -> tuple[bool, str]:
+    """Opens a file, directory, application, or URL on Windows with intelligent resolution."""
+    t_clean = target.strip()
+    t_low = t_clean.lower()
+
+    # Smart Target Aliases
+    if t_low in ["gpt", "chatgpt", "open gpt", "chat gpt"]:
+        os.startfile("https://chatgpt.com")
+        return True, "Opened ChatGPT (https://chatgpt.com)"
+    elif t_low in ["yt", "youtube"]:
+        os.startfile("https://www.youtube.com")
+        return True, "Opened YouTube (https://www.youtube.com)"
+    elif t_low in ["antigravity", "antigravity ide", "agy"]:
+        return launch_antigravity_ide()
+    elif t_low == "chrome":
+        os.system("start chrome.exe")
+        return True, "Launched Google Chrome"
+    elif t_low in ["notepad", "note"]:
+        os.system("start notepad.exe")
+        return True, "Launched Notepad"
+    elif t_low in ["calc", "calculator"]:
+        os.system("start calc.exe")
+        return True, "Launched Windows Calculator"
+    elif t_low in ["code", "vscode", "vs code"]:
+        os.system("code .")
+        return True, "Launched Visual Studio Code"
+
+    try:
+        os.startfile(t_clean)
+        return True, f"Opened: {t_clean}"
+    except Exception as e:
+        # Fallback to shell start
+        try:
+            os.system(f'start "" "{t_clean}"')
+            return True, f"Started: {t_clean}"
+        except Exception:
+            return False, f"Failed to open '{t_clean}': {str(e)}"
 
 def simulate_input(action_type: str, *args) -> tuple[bool, str]:
     """Simulates keyboard or mouse events."""

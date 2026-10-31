@@ -2,13 +2,14 @@ import os
 import io
 import time
 import json
+import re
 import socket
 import secrets
 import asyncio
 import ctypes
 import urllib.parse
 from pathlib import Path
-from typing import Optional, Set, List
+from typing import Optional, Set, List, Tuple
 from aiohttp import web
 import cv2
 import numpy as np
@@ -100,7 +101,7 @@ HTML_CLIENT = """<!DOCTYPE html>
     cursor: default; touch-action: none; image-rendering: auto;
   }
 
-  /* PREDICTIVE CLIENT-SIDE HARDWARE CURSOR (0ms JITTER-FREE) */
+  /* PREDICTIVE CLIENT-SIDE HARDWARE CURSOR */
   #client-cursor {
     position: absolute; width: 18px; height: 22px; pointer-events: none; z-index: 1000;
     transform: translate(-1px, -1px); display: none; filter: drop-shadow(0 2px 4px rgba(0,0,0,0.8));
@@ -251,9 +252,68 @@ HTML_CLIENT = """<!DOCTYPE html>
   .ripple-left { border: 2px solid #3b82f6; background: rgba(59, 130, 246, 0.35); }
   .ripple-right { border: 2px solid #ef4444; background: rgba(239, 68, 68, 0.35); }
   @keyframes rippleAnim { 0% { opacity: 1; transform: translate(-50%, -50%) scale(0.3); } 100% { opacity: 0; transform: translate(-50%, -50%) scale(1.6); } }
+
+  /* SECURITY PIN CHECKPOINT OVERLAY */
+  #auth-overlay {
+    position: fixed; top: 0; left: 0; width: 100vw; height: 100dvh;
+    background: radial-gradient(circle at center, #0b1329 0%, #030712 100%);
+    display: flex; align-items: center; justify-content: center; z-index: 10000;
+    transition: opacity 0.35s ease, transform 0.35s ease;
+  }
+  #auth-overlay.unlocked {
+    opacity: 0; transform: scale(1.04); pointer-events: none;
+  }
+  .auth-card {
+    background: rgba(15, 23, 42, 0.90); backdrop-filter: blur(28px); -webkit-backdrop-filter: blur(28px);
+    border: 1px solid rgba(255, 255, 255, 0.16); border-radius: 26px; padding: 32px 24px;
+    max-width: 360px; width: 90%; text-align: center;
+    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8), 0 0 40px rgba(59, 130, 246, 0.2);
+  }
+  .auth-badge {
+    display: inline-block; font-size: 10px; font-weight: 800; letter-spacing: 1.5px;
+    color: #38bdf8; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.28);
+    padding: 4px 10px; border-radius: 20px; margin-bottom: 14px; text-transform: uppercase;
+  }
+  .auth-icon { font-size: 42px; margin-bottom: 8px; filter: drop-shadow(0 0 16px rgba(56, 189, 248, 0.5)); }
+  .auth-title { font-size: 20px; font-weight: 800; color: #fff; margin-bottom: 6px; letter-spacing: -0.3px; }
+  .auth-desc { font-size: 12px; color: #94a3b8; line-height: 1.5; margin-bottom: 22px; }
+  .pin-box-wrapper { margin-bottom: 12px; }
+  #pin-input {
+    width: 100%; font-size: 32px; letter-spacing: 10px; text-align: center; font-weight: 800;
+    color: #38bdf8; background: rgba(255, 255, 255, 0.05); border: 2px solid rgba(56, 189, 248, 0.35);
+    border-radius: 16px; padding: 10px 0; outline: none; transition: all 0.2s;
+  }
+  #pin-input:focus { border-color: #38bdf8; box-shadow: 0 0 20px rgba(56, 189, 248, 0.35); }
+  #auth-msg { min-height: 20px; font-size: 12px; font-weight: 700; margin-bottom: 12px; color: #ef4444; }
+  #btn-unlock {
+    width: 100%; background: linear-gradient(135deg, #2563eb, #7c3aed); border: none; color: #fff;
+    font-size: 13px; font-weight: 800; letter-spacing: 0.5px; padding: 14px 0; border-radius: 14px;
+    cursor: pointer; transition: all 0.2s; box-shadow: 0 8px 24px rgba(37, 99, 235, 0.4);
+  }
+  #btn-unlock:active { transform: scale(0.97); }
+  .auth-meta { font-size: 10px; color: #64748b; margin-top: 16px; font-weight: 600; }
 </style>
 </head>
 <body>
+
+<!-- SECURITY PIN CHECKPOINT OVERLAY -->
+<div id="auth-overlay">
+  <div class="auth-card">
+    <div class="auth-badge">SECURITY CHECKPOINT</div>
+    <div class="auth-icon">🛡️</div>
+    <h1 class="auth-title">Sentient Remote Pro</h1>
+    <p class="auth-desc">Enter the 6-digit dynamic PIN generated in Discord to authorize this device.</p>
+    
+    <div class="pin-box-wrapper">
+      <input type="password" id="pin-input" inputmode="numeric" pattern="[0-9]*" maxlength="6" placeholder="• • • • • •" autofocus autocomplete="off">
+    </div>
+    
+    <div id="auth-msg"></div>
+    
+    <button id="btn-unlock" onclick="submitPin()">UNLOCK LIVE CONTROL</button>
+    <div class="auth-meta">🔒 Dynamic One-Time Token • 50 FPS OpenCV SIMD</div>
+  </div>
+</div>
 
 <div id="stage" class="mode-fit">
   <div id="canvas-container">
@@ -375,7 +435,7 @@ HTML_CLIENT = """<!DOCTYPE html>
 <div class="drawer" id="drawer-ai">
   <div class="drawer-title">✨ Autonomous Desktop Multi-Task Pilot</div>
   <div class="ai-bar">
-    <input type="text" class="ai-input" id="ai-prompt" placeholder="e.g. Open chrome and then yt with michael jackson song...">
+    <input type="text" class="ai-input" id="ai-prompt" placeholder="e.g. Open chrome and open gpt and say hi...">
     <button class="ai-submit" onclick="executeAIAction()">GO</button>
   </div>
 </div>
@@ -398,6 +458,54 @@ HTML_CLIENT = """<!DOCTYPE html>
   let ws = null;
   let lastFrameTime = performance.now();
   let frameCount = 0;
+  let verifiedPin = '';
+
+  // SECURITY PIN SUBMISSION
+  async function submitPin() {
+    const pinInput = document.getElementById('pin-input');
+    const msgEl = document.getElementById('auth-msg');
+    const pin = pinInput.value.trim();
+
+    if (!pin || pin.length < 4) {
+      msgEl.textContent = 'Please enter the complete PIN.';
+      pinInput.focus();
+      return;
+    }
+
+    msgEl.style.color = '#38bdf8';
+    msgEl.textContent = 'Verifying security PIN...';
+
+    try {
+      const res = await fetch('/verify_pin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: token, pin: pin })
+      });
+      const data = await res.json();
+      if (res.ok && data.valid) {
+        verifiedPin = pin;
+        msgEl.style.color = '#10b981';
+        msgEl.textContent = 'Authorized! Connecting 50 FPS stream...';
+        const overlay = document.getElementById('auth-overlay');
+        overlay.classList.add('unlocked');
+        setTimeout(() => overlay.remove(), 400);
+        connect(verifiedPin);
+      } else {
+        msgEl.style.color = '#ef4444';
+        msgEl.textContent = data.error || 'Invalid PIN. Check Discord.';
+        pinInput.value = '';
+        pinInput.focus();
+        if (navigator.vibrate) navigator.vibrate([40, 60, 40]);
+      }
+    } catch (err) {
+      msgEl.style.color = '#ef4444';
+      msgEl.textContent = 'Verification connection failed.';
+    }
+  }
+
+  document.getElementById('pin-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') submitPin();
+  });
 
   // VIEW MODE ENGINE
   let currentMode = 'fit';
@@ -482,12 +590,11 @@ HTML_CLIENT = """<!DOCTYPE html>
   btnRestore.addEventListener('click', toggleFullscreen);
 
   // WEBSOCKET 50 FPS ENGINE
-  const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${wsProto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
-
   let isRenderingFrame = false;
 
-  function connect() {
+  function connect(pin) {
+    const wsProto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${wsProto}//${location.host}/ws?token=${encodeURIComponent(token)}&pin=${encodeURIComponent(pin)}`;
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'blob';
 
@@ -503,7 +610,6 @@ HTML_CLIENT = """<!DOCTYPE html>
           canvas.height = nativeHeight;
         }
       } else {
-        // Drop frame if previous is still decoding to keep 0ms latency
         if (isRenderingFrame) return;
         isRenderingFrame = true;
 
@@ -531,10 +637,9 @@ HTML_CLIENT = """<!DOCTYPE html>
 
     ws.onclose = () => {
       document.getElementById('fps-label').textContent = 'RECONNECTING...';
-      setTimeout(connect, 1500);
+      setTimeout(() => { if (verifiedPin) connect(verifiedPin); }, 1500);
     };
   }
-  connect();
 
   function sendWS(data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -560,21 +665,21 @@ HTML_CLIENT = """<!DOCTYPE html>
     return { x: Math.round(x), y: Math.round(y) };
   }
 
-  // --- TWO-FINGER PINCH-TO-ZOOM & PAN ON CANVAS ---
+  // --- TWO-FINGER PINCH-TO-ZOOM & PAN ON STAGE (ANYWHERE INCLUDING BLACK BORDERS) ---
   let touchStartTime = 0;
   let touchStartX = 0, touchStartY = 0;
-  let lastCanvasTouchX = 0, lastCanvasTouchY = 0;
+  let lastTouchX = 0, lastTouchY = 0;
   let touchCount = 0;
   let isDragging = false;
   let holdTimer = null;
   let lastTapTime = 0;
 
-  canvas.addEventListener('touchstart', (e) => {
+  stage.addEventListener('touchstart', (e) => {
     touchCount = e.touches.length;
     touchStartTime = performance.now();
 
     if (touchCount === 2) {
-      // Begin 2-Finger Pinch Zoom & Pan
+      // 2-Finger Pinch Zoom & Pan anywhere on screen (even on letterbox borders!)
       isPinching = true;
       if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
       isDragging = false;
@@ -591,10 +696,14 @@ HTML_CLIENT = """<!DOCTYPE html>
       const t = e.touches[0];
       touchStartX = t.clientX;
       touchStartY = t.clientY;
-      lastCanvasTouchX = t.clientX;
-      lastCanvasTouchY = t.clientY;
+      lastTouchX = t.clientX;
+      lastTouchY = t.clientY;
 
-      // Double tap to reset zoom
+      const rect = canvas.getBoundingClientRect();
+      const isInsideCanvas = (t.clientX >= rect.left && t.clientX <= rect.right &&
+                             t.clientY >= rect.top && t.clientY <= rect.bottom);
+
+      // Double tap anywhere on stage to reset zoom
       const now = performance.now();
       if (now - lastTapTime < 300) {
         currentScale = 1.0;
@@ -605,17 +714,19 @@ HTML_CLIENT = """<!DOCTYPE html>
       }
       lastTapTime = now;
 
-      holdTimer = setTimeout(() => {
-        isDragging = true;
-        if (navigator.vibrate) navigator.vibrate(35);
-        const coords = getScreenCoords(t.clientX, t.clientY);
-        sendWS({ type: 'mouse_down', button: 'left', x: coords.x, y: coords.y });
-        createRipple(t.clientX, t.clientY, false);
-      }, 350);
+      if (isInsideCanvas && currentScale <= 1.05) {
+        holdTimer = setTimeout(() => {
+          isDragging = true;
+          if (navigator.vibrate) navigator.vibrate(35);
+          const coords = getScreenCoords(t.clientX, t.clientY);
+          sendWS({ type: 'mouse_down', button: 'left', x: coords.x, y: coords.y });
+          createRipple(t.clientX, t.clientY, false);
+        }, 350);
+      }
     }
   }, { passive: false });
 
-  canvas.addEventListener('touchmove', (e) => {
+  stage.addEventListener('touchmove', (e) => {
     e.preventDefault();
 
     if (isPinching && e.touches.length === 2) {
@@ -624,7 +735,7 @@ HTML_CLIENT = """<!DOCTYPE html>
       const dist = Math.hypot(t0.clientX - t1.clientX, t0.clientY - t1.clientY);
       if (pinchStartDist > 0) {
         const ratio = dist / pinchStartDist;
-        currentScale = Math.max(1.0, Math.min(4.5, pinchStartScale * ratio));
+        currentScale = Math.max(1.0, Math.min(5.0, pinchStartScale * ratio));
       }
       const midX = (t0.clientX + t1.clientX) / 2;
       const midY = (t0.clientY + t1.clientY) / 2;
@@ -645,24 +756,23 @@ HTML_CLIENT = """<!DOCTYPE html>
         const coords = getScreenCoords(t.clientX, t.clientY);
         sendWS({ type: 'mouse_move', x: coords.x, y: coords.y });
       } else if (currentScale > 1.05) {
-        // When zoomed in, 1 finger drag pans the view
-        panX += (t.clientX - lastCanvasTouchX);
-        panY += (t.clientY - lastCanvasTouchY);
+        // Panning works ANYWHERE on screen, including the black borders!
+        panX += (t.clientX - lastTouchX);
+        panY += (t.clientY - lastTouchY);
         updateTransform();
       }
-      lastCanvasTouchX = t.clientX;
-      lastCanvasTouchY = t.clientY;
+      lastTouchX = t.clientX;
+      lastTouchY = t.clientY;
     }
   }, { passive: false });
 
-  canvas.addEventListener('touchend', (e) => {
+  stage.addEventListener('touchend', (e) => {
     if (holdTimer) clearTimeout(holdTimer);
     if (isPinching) {
       if (e.touches.length < 2) isPinching = false;
       return;
     }
 
-    const duration = performance.now() - touchStartTime;
     if (isDragging) {
       isDragging = false;
       const t = e.changedTouches[0];
@@ -671,11 +781,14 @@ HTML_CLIENT = """<!DOCTYPE html>
       return;
     }
 
+    const duration = performance.now() - touchStartTime;
     const t = e.changedTouches[0];
     const dist = Math.hypot(t.clientX - touchStartX, t.clientY - touchStartY);
 
-    if (dist < 12 && duration < 320) {
-      if (touchCount === 1) {
+    if (dist < 12 && duration < 320 && touchCount === 1) {
+      const rect = canvas.getBoundingClientRect();
+      if (t.clientX >= rect.left && t.clientX <= rect.right &&
+          t.clientY >= rect.top && t.clientY <= rect.bottom) {
         createRipple(t.clientX, t.clientY, false);
         const coords = getScreenCoords(t.clientX, t.clientY);
         sendWS({ type: 'mouse_click', button: 'left', x: coords.x, y: coords.y });
@@ -683,7 +796,7 @@ HTML_CLIENT = """<!DOCTYPE html>
     }
   }, { passive: false });
 
-  // --- FLOATING COMPACT MOUSEPAD WITH PREDICTIVE CURSOR ---
+  // --- FLOATING COMPACT MOUSEPAD ---
   const pad = document.getElementById('floating-mousepad');
   const padBadge = document.getElementById('mousepad-badge');
   const padSurface = document.getElementById('pad-surface');
@@ -854,6 +967,7 @@ class WebRemoteServer:
         self.host = host
         self.port = port
         self.active_token: Optional[str] = None
+        self.active_pin: Optional[str] = None
         self.app: Optional[web.Application] = None
         self.runner: Optional[web.AppRunner] = None
         self.site: Optional[web.TCPSite] = None
@@ -863,31 +977,20 @@ class WebRemoteServer:
         self.screen_width = 1920
         self.screen_height = 1080
         self.last_activity = time.time()
-        self._init_persistent_token()
 
-    def _init_persistent_token(self):
-        """Ensures the remote URL stays static and never expires between restarts."""
-        if config.REMOTE_STATIC_TOKEN:
-            self.active_token = config.REMOTE_STATIC_TOKEN
-            return
-
-        token_file = Path(__file__).resolve().parent / ".remote_token"
-        if token_file.is_file():
-            saved = token_file.read_text(encoding="utf-8").strip()
-            if saved:
-                self.active_token = saved
-                return
-
-        new_token = secrets.token_urlsafe(16)
-        try:
-            token_file.write_text(new_token, encoding="utf-8")
-        except Exception:
-            pass
-        self.active_token = new_token
-
-    def get_access_url(self) -> str:
+    def generate_session(self) -> Tuple[str, str]:
+        """Generates dynamic per-session access token and random 6-digit PIN."""
+        self.active_token = secrets.token_urlsafe(16)
+        self.active_pin = f"{secrets.randbelow(900000) + 100000}"
         ip = get_local_ip()
-        return f"http://{ip}:{self.port}/?token={self.active_token}"
+        url = f"http://{ip}:{self.port}/?token={self.active_token}"
+        return url, self.active_pin
+
+    def get_access_info(self) -> Tuple[str, str]:
+        if not self.active_token or not self.active_pin:
+            return self.generate_session()
+        ip = get_local_ip()
+        return f"http://{ip}:{self.port}/?token={self.active_token}", self.active_pin
 
     async def handle_index(self, request: web.Request):
         req_token = request.query.get("token")
@@ -895,10 +998,22 @@ class WebRemoteServer:
             return web.Response(text="⛔ Unauthorized: Invalid or expired access token.", status=403)
         return web.Response(text=HTML_CLIENT, content_type="text/html")
 
+    async def handle_verify_pin(self, request: web.Request):
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"valid": False, "error": "Malformed request"}, status=400)
+        token = data.get("token", "").strip()
+        pin = data.get("pin", "").strip()
+        if token == self.active_token and pin == self.active_pin and self.active_token:
+            return web.json_response({"valid": True})
+        return web.json_response({"valid": False, "error": "Invalid PIN. Check Discord."}, status=401)
+
     async def handle_ws(self, request: web.Request):
         req_token = request.query.get("token")
-        if not req_token or req_token != self.active_token:
-            return web.Response(text="Forbidden", status=403)
+        req_pin = request.query.get("pin")
+        if not req_token or req_token != self.active_token or not req_pin or req_pin != self.active_pin:
+            return web.Response(text="Forbidden: Invalid token or PIN", status=403)
 
         ws = web.WebSocketResponse(max_msg_size=10*1024*1024)
         await ws.prepare(request)
@@ -1007,95 +1122,103 @@ class WebRemoteServer:
     async def _run_ai_desktop_task(self, prompt: str):
         """Intelligent Autonomous Multi-Task Desktop Execution Engine."""
         _attach_to_default_desktop()
-        
-        # Split compound multi-step instructions
-        clean_p = prompt.replace(" and then ", " ; ").replace(" then ", " ; ").replace(" and ", " ; ")
-        subtasks = [s.strip() for s in clean_p.split(";") if s.strip()]
+        p_raw = prompt.strip()
+        p_low = p_raw.lower()
 
-        for task in subtasks:
-            t_low = task.lower()
-
-            # 1. YouTube & Media Searches
-            if any(k in t_low for k in ["youtube", "yt", "play song", "song", "video"]):
-                search_query = task
-                for prefix in ["open youtube with", "open yt with", "play", "search youtube for", "youtube", "yt"]:
-                    if prefix in t_low:
-                        idx = t_low.find(prefix) + len(prefix)
-                        search_query = task[idx:].strip()
-                        break
-                encoded_q = urllib.parse.quote_plus(search_query)
-                os.startfile(f"https://www.youtube.com/results?search_query={encoded_q}")
+        # Check for Antigravity IDE launch request
+        if any(a in p_low for a in ["antigravity", "antigravity ide", "agy"]):
+            if "open" in p_low or "launch" in p_low or "start" in p_low:
+                sys_ctl.launch_antigravity_ide()
                 await asyncio.sleep(1.0)
-                continue
+                return
 
-            # 2. Google Searches
-            if t_low.startswith("search ") or t_low.startswith("google "):
-                query = task.split(" ", 1)[-1].strip()
-                encoded_q = urllib.parse.quote_plus(query)
-                os.startfile(f"https://www.google.com/search?q={encoded_q}")
-                await asyncio.sleep(1.0)
-                continue
+        # Check for ChatGPT / GPT compound flows (e.g. 'open chrome and open gpt and say hi')
+        has_gpt = any(g in p_low for g in ["gpt", "chatgpt", "chat gpt", "openai"])
+        if has_gpt:
+            # Launch Chrome with ChatGPT or open URL
+            if any(b in p_low for b in ["chrome", "browser"]):
+                os.system('start chrome.exe "https://chatgpt.com"')
+            else:
+                os.startfile("https://chatgpt.com")
+            await asyncio.sleep(2.8)
 
-            # 3. Chrome with specific profile
-            if "chrome" in t_low:
-                if "profile" in t_low:
-                    # e.g. open chrome with profile 1
-                    profile_name = task.split("profile", 1)[-1].strip() or "Default"
-                    os.system(f'start chrome.exe --profile-directory="{profile_name}"')
-                else:
-                    sys_ctl.open_path_or_app("chrome")
-                await asyncio.sleep(1.0)
-                continue
+            # Check for words to type/send to ChatGPT
+            for phrase in ["say ", "type ", "write ", "ask ", "prompt "]:
+                if phrase in p_low:
+                    idx = p_low.rfind(phrase) + len(phrase)
+                    text_to_say = p_raw[idx:].strip().strip('"').strip("'")
+                    if text_to_say:
+                        await asyncio.sleep(0.5)
+                        pyautogui.write(text_to_say, interval=0.03)
+                        pyautogui.press("enter")
+                    break
+            return
 
-            # 4. Native Windows Applications
-            if "notepad" in t_low:
+        # Check for YouTube searches
+        if any(y in p_low for y in ["youtube", "yt"]):
+            query = ""
+            for kw in ["play", "search", "with", "for"]:
+                if kw in p_low:
+                    query = p_raw[p_low.find(kw) + len(kw):].strip()
+                    break
+            if not query:
+                query = p_raw.replace("open youtube", "").replace("open yt", "").strip()
+            encoded = urllib.parse.quote_plus(query) if query else ""
+            url = f"https://www.youtube.com/results?search_query={encoded}" if encoded else "https://www.youtube.com"
+            os.startfile(url)
+            await asyncio.sleep(1.5)
+            return
+
+        # Universal Sequential Pipeline for multi-step tasks
+        steps = re.split(r'\s+and\s+then\s+|\s+then\s+|\s+and\s+|;\s*', p_raw, flags=re.IGNORECASE)
+        for step in steps:
+            s = step.strip()
+            if not s:
+                continue
+            s_low = s.lower()
+
+            if "notepad" in s_low:
                 os.system("start notepad.exe")
-                await asyncio.sleep(0.8)
-                continue
-            elif "calc" in t_low or "calculator" in t_low:
+                await asyncio.sleep(1.0)
+            elif "calc" in s_low or "calculator" in s_low:
                 os.system("start calc.exe")
                 await asyncio.sleep(0.8)
-                continue
-            elif "spotify" in t_low:
+            elif "spotify" in s_low:
                 os.system("start spotify:")
                 await asyncio.sleep(1.0)
-                continue
-            elif "code" in t_low or "vs code" in t_low or "vscode" in t_low:
+            elif "code" in s_low or "vscode" in s_low:
                 os.system("code .")
                 await asyncio.sleep(1.0)
-                continue
-            elif "terminal" in t_low or "powershell" in t_low:
+            elif "terminal" in s_low or "powershell" in s_low:
                 os.system("start wt.exe")
                 await asyncio.sleep(0.8)
-                continue
-            elif "explorer" in t_low or "file manager" in t_low:
-                os.system("explorer.exe")
-                await asyncio.sleep(0.8)
-                continue
-
-            # 5. Direct Typing & Hotkeys
-            if t_low.startswith("type "):
-                text_to_type = task[5:].strip()
-                pyautogui.write(text_to_type, interval=0.01)
+            elif "chrome" in s_low:
+                os.system("start chrome.exe")
+                await asyncio.sleep(1.5)
+            elif s_low.startswith("type ") or s_low.startswith("say ") or s_low.startswith("write "):
+                words = s.split(" ", 1)[-1].strip().strip('"').strip("'")
+                pyautogui.write(words, interval=0.02)
                 await asyncio.sleep(0.3)
-                continue
-            elif t_low.startswith("press "):
-                key = task[6:].strip()
+            elif s_low.startswith("press ") or s_low.startswith("hit "):
+                key = s.split(" ", 1)[-1].strip().lower()
                 pyautogui.press(key)
                 await asyncio.sleep(0.2)
-                continue
-            elif t_low == "lock" or t_low == "lock pc":
+            elif s_low == "enter":
+                pyautogui.press("enter")
+                await asyncio.sleep(0.2)
+            elif s_low in ["lock", "lock pc"]:
                 user32.LockWorkStation()
-                continue
-
-            # 6. Fallback to general open or shell command
-            if t_low.startswith("open "):
-                target = task[5:].strip()
+            elif s_low.startswith("search ") or s_low.startswith("google "):
+                q = s.split(" ", 1)[-1].strip()
+                os.startfile(f"https://www.google.com/search?q={urllib.parse.quote_plus(q)}")
+                await asyncio.sleep(1.0)
+            elif s_low.startswith("open "):
+                target = s[5:].strip()
                 sys_ctl.open_path_or_app(target)
+                await asyncio.sleep(0.8)
             else:
-                sys_ctl.execute_shell(task)
-
-            await asyncio.sleep(0.5)
+                sys_ctl.open_path_or_app(s)
+                await asyncio.sleep(0.5)
 
     async def _capture_stream_loop(self):
         """Hardware-Accelerated 50 FPS Video Pipeline via OpenCV SIMD."""
@@ -1106,14 +1229,12 @@ class WebRemoteServer:
             mon_left = monitor["left"]
             mon_top = monitor["top"]
 
-            # Pre-allocated cursor polygon points for ultra-fast OpenCV vector rendering
             base_cursor = np.array([
                 [0, 0], [0, 17], [4, 13], [9, 21], [12, 20], [7, 12], [13, 12]
             ], dtype=np.int32)
             base_shadow = base_cursor + 1
 
             while self.is_running:
-                # 5-minute inactivity watchdog
                 if time.time() - self.last_activity > 300 and self.active_websockets:
                     user32.LockWorkStation()
                     for ws in list(self.active_websockets):
@@ -1127,11 +1248,9 @@ class WebRemoteServer:
                 loop_start = time.time()
                 try:
                     sct_img = sct.grab(monitor)
-                    # Instant zero-copy numpy slice (BGRA to BGR)
                     raw_bgra = np.array(sct_img, dtype=np.uint8)
                     frame = raw_bgra[:, :, :3]
 
-                    # Vectorized hardware cursor drawing (~0.04ms)
                     try:
                         pos = pyautogui.position()
                         cx = int(pos.x - mon_left)
@@ -1146,20 +1265,16 @@ class WebRemoteServer:
                     except Exception:
                         pass
 
-                    # Target 720p scaling using hardware SIMD interpolation
                     target_w = 1280
                     target_h = int(frame.shape[0] * (target_w / frame.shape[1]))
                     resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
 
-                    # Hardware-accelerated TurboJPEG encoding
                     _, enc = cv2.imencode('.jpg', resized, [int(cv2.IMWRITE_JPEG_QUALITY), 62])
                     frame_bytes = enc.tobytes()
 
-                    # Broadcast with non-blocking socket backpressure check
                     dead_sockets = set()
                     for ws in list(self.active_websockets):
                         try:
-                            # Drop frame if previous socket buffer is saturated to maintain zero latency
                             await ws.send_bytes(frame_bytes)
                         except Exception:
                             dead_sockets.add(ws)
@@ -1169,7 +1284,6 @@ class WebRemoteServer:
                 except Exception:
                     pass
 
-                # 50 FPS Pace Target (20ms)
                 elapsed = time.time() - loop_start
                 target_interval = 1.0 / 50.0
                 if target_interval > elapsed:
@@ -1177,12 +1291,24 @@ class WebRemoteServer:
                 else:
                     await asyncio.sleep(0.001)
 
-    async def start(self) -> str:
+    async def start(self) -> Tuple[str, str]:
+        """Starts the server and generates a brand new dynamic token and 6-digit PIN."""
+        url, pin = self.generate_session()
+
+        # Invalidate old sessions
+        for ws in list(self.active_websockets):
+            try:
+                await ws.close()
+            except Exception:
+                pass
+        self.active_websockets.clear()
+
         if self.is_running:
-            return self.get_access_url()
+            return url, pin
 
         self.app = web.Application()
         self.app.router.add_get("/", self.handle_index)
+        self.app.router.add_post("/verify_pin", self.handle_verify_pin)
         self.app.router.add_get("/ws", self.handle_ws)
 
         self.runner = web.AppRunner(self.app)
@@ -1192,14 +1318,19 @@ class WebRemoteServer:
 
         self.is_running = True
         self.capture_task = asyncio.create_task(self._capture_stream_loop())
-        return self.get_access_url()
+        return url, pin
 
     async def stop(self):
         self.is_running = False
+        self.active_token = None
+        self.active_pin = None
         if self.capture_task:
             self.capture_task.cancel()
         for ws in list(self.active_websockets):
-            await ws.close()
+            try:
+                await ws.close()
+            except Exception:
+                pass
         self.active_websockets.clear()
 
         if self.site:

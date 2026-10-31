@@ -65,9 +65,10 @@ class DiscordTypeModal(discord.ui.Modal, title="Type on Windows PC"):
         )
 
 class StreamLinkView(discord.ui.View):
-    def __init__(self, url: str):
+    def __init__(self, url: str, pin: str):
         super().__init__(timeout=600)
         self.url = url
+        self.pin = pin
         # Direct Clickable Link Button for mobile browser
         self.add_item(discord.ui.Button(label="🚀 Open 50 FPS Stream", style=discord.ButtonStyle.link, url=url))
 
@@ -75,6 +76,11 @@ class StreamLinkView(discord.ui.View):
     async def copy_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         # Replies with ONLY the raw URL for clean 1-tap clipboard copying on phone
         await interaction.response.send_message(self.url, ephemeral=True)
+
+    @discord.ui.button(label="🔑 Copy PIN Only", style=discord.ButtonStyle.primary, emoji="🛡️")
+    async def pin_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Replies with ONLY the raw 6-digit PIN
+        await interaction.response.send_message(self.pin, ephemeral=True)
 
 class DiscordRemoteView(discord.ui.View):
     def __init__(self):
@@ -143,10 +149,10 @@ class DiscordRemoteView(discord.ui.View):
     async def stream_link_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not await check_auth_interaction(interaction): return
         await interaction.response.defer(ephemeral=True)
-        url = await web_remote_server.start()
+        url, pin = await web_remote_server.start()
         await interaction.followup.send(
-            content=f"🎮 **50 FPS Web Touch Stream:**\n👉 **`{url}`**\n*(Hardware-accelerated OpenCV 50 FPS • Draggable Mousepad • 2-Finger Pinch Zoom)*",
-            view=StreamLinkView(url),
+            content=f"🎮 **50 FPS Web Touch Stream:**\n👉 **`{url}`**\n🔑 **Access PIN:** `{pin}`\n*(Hardware-accelerated OpenCV 50 FPS • Draggable Mousepad • 2-Finger Pinch Zoom)*",
+            view=StreamLinkView(url, pin),
             ephemeral=True
         )
 
@@ -196,9 +202,10 @@ class QuickControlView(discord.ui.View):
         if not await check_auth_interaction(interaction):
             return
         await interaction.response.defer(ephemeral=True)
-        url = await web_remote_server.start()
+        url, pin = await web_remote_server.start()
         await interaction.followup.send(
-            content=f"🎮 **Sentient Mobile Touch Remote Active!**\nTap on your phone browser:\n👉 **<{url}>**\n\n*(Full trackpad emulation, 2-finger right click, scrolling & AI pilot)*",
+            content=f"🎮 **50 FPS Mobile Touch Remote Active!**\n👉 **`{url}`**\n🔑 **Access PIN:** `{pin}`\n*(Enter this PIN in your phone's browser to unlock)*",
+            view=StreamLinkView(url, pin),
             ephemeral=True
         )
 
@@ -489,30 +496,43 @@ async def slash_agent_chat(interaction: discord.Interaction, prompt: str, worksp
     asyncio.create_task(session.run_turn(prompt))
 
 # 8. ZERO-INSTALL MOBILE TOUCH REMOTE (WEBSOCKET/CANVAS)
-@bot.tree.command(name="stream", description="Starts the 30-40 FPS mobile web touch remote server.")
+@bot.tree.command(name="stream", description="Starts the 50 FPS mobile web touch remote server with dynamic PIN protection.")
 async def slash_stream(interaction: discord.Interaction):
     if not await check_auth_interaction(interaction):
         return
-    await interaction.response.defer()
-    url = await web_remote_server.start()
+    try:
+        await interaction.response.defer()
+    except Exception:
+        pass
+
+    url, pin = await web_remote_server.start()
     embed = discord.Embed(
-        title="🎮 Sentient Mobile Touch Remote (30 FPS)",
+        title="🎮 Sentient Mobile Touch Remote (50 FPS)",
         description=(
-            f"**Tap this link on your phone's browser to control your laptop:**\n\n"
+            f"**Tap the link below on your phone to control your laptop:**\n\n"
             f"👉 **[Launch Touch Remote]({url})**\n`{url}`\n\n"
-            f"✨ **Gestures:**\n"
-            f"• **1-Finger Tap:** Left Click\n"
-            f"• **2-Finger Tap:** Right Click\n"
-            f"• **2-Finger Drag:** Natural Scroll\n"
-            f"• **Hold + Drag:** Left Mouse Drag\n"
-            f"• **Top Toggle:** Direct Touch vs Laptop Trackpad mode\n"
-            f"• **AI Assist:** Floating prompt bar to speak/type autonomous tasks\n"
+            f"🔑 **Dynamic Security PIN:** `{pin}`\n"
+            f"*(Enter this 6-digit PIN on the login screen to unlock live control)*\n\n"
+            f"✨ **Controls & Touch Features:**\n"
+            f"• **1-Finger Tap:** Instant Left Click on desktop\n"
+            f"• **2-Finger Pinch:** Dynamic Zoom (works everywhere, even black borders!)\n"
+            f"• **1-Finger Drag (when zoomed):** Pan desktop viewport\n"
+            f"• **Double Tap:** Reset zoom to 1.0x\n"
+            f"• **Floating Mousepad:** Draggable touchpad with scroll rail\n"
+            f"• **AI Pilot:** Multi-task assistant ('open chrome and open gpt and say hi')\n"
         ),
         color=discord.Color.purple(),
         timestamp=datetime.now()
     )
-    embed.set_footer(text="Hardware Accelerated • 50 FPS OpenCV • Pinch-to-Zoom")
-    await interaction.followup.send(embed=embed, view=StreamLinkView(url))
+    embed.set_footer(text="Hardware Accelerated • 50 FPS OpenCV • End-to-End Encrypted")
+    view = StreamLinkView(url, pin)
+    try:
+        if interaction.response.is_done():
+            await interaction.followup.send(embed=embed, view=view)
+        else:
+            await interaction.response.send_message(embed=embed, view=view)
+    except Exception:
+        await interaction.channel.send(embed=embed, view=view)
 
 @bot.tree.command(name="stream_stop", description="Shuts down the mobile web touch remote server.")
 async def slash_stream_stop(interaction: discord.Interaction):
@@ -520,6 +540,37 @@ async def slash_stream_stop(interaction: discord.Interaction):
         return
     await web_remote_server.stop()
     await interaction.response.send_message("🛑 Mobile touch remote server stopped.")
+
+@bot.tree.command(name="antigravity", description="Controls Antigravity: launch the Desktop IDE GUI or run autonomous tasks.")
+@app_commands.describe(
+    action="Choose what to do",
+    prompt="Goal or instructions (if running autonomous task)"
+)
+@app_commands.choices(action=[
+    app_commands.Choice(name="🚀 Launch Antigravity Desktop IDE Window", value="launch_ide"),
+    app_commands.Choice(name="🤖 Run Autonomous Agent Task", value="run_task")
+])
+async def slash_antigravity(interaction: discord.Interaction, action: app_commands.Choice[str], prompt: Optional[str] = None):
+    if not await check_auth_interaction(interaction):
+        return
+    try:
+        await interaction.response.defer()
+    except Exception:
+        pass
+
+    if action.value == "launch_ide":
+        ok, msg = sys_ctl.launch_antigravity_ide()
+        embed = discord.Embed(
+            title="🚀 Antigravity IDE Launcher",
+            description=f"{'✅' if ok else '❌'} {msg}",
+            color=discord.Color.green() if ok else discord.Color.red(),
+            timestamp=datetime.now()
+        )
+        await interaction.followup.send(embed=embed)
+    else:
+        task_prompt = prompt if prompt else "Analyze repository status and verify environment"
+        job_id = agent_runner.launch_agent_task(prompt=task_prompt, workspace=config.DEFAULT_WORKSPACE, channel=interaction.channel, email_to=config.DEFAULT_EMAIL_TO)
+        await interaction.followup.send(f"🤖 **Dispatched Antigravity Autonomous Agent** (`{job_id}`)\nTask: `{task_prompt}`")
 
 # ----------------- STANDARD CORE COMMANDS -----------------
 @bot.tree.command(name="screen", description="Captures a live screenshot of your laptop desktop.")
@@ -744,14 +795,32 @@ async def cmd_lock(ctx: commands.Context):
     ok, msg = sys_ctl.power_action("lock")
     await ctx.reply(f"🔒 {msg}")
 
+@bot.command(name="antigravity")
+async def cmd_antigravity(ctx: commands.Context, *, arg: str = ""):
+    if not is_owner(ctx.author.id): return
+    arg_clean = arg.strip().lower()
+    if not arg_clean or arg_clean in ["open", "launch", "ide", "start", "gui"]:
+        ok, msg = sys_ctl.launch_antigravity_ide()
+        await ctx.reply(f"{'🚀' if ok else '❌'} {msg}")
+    else:
+        job_id = agent_runner.launch_agent_task(prompt=arg, workspace=config.DEFAULT_WORKSPACE, channel=ctx.channel, email_to=config.DEFAULT_EMAIL_TO)
+        await ctx.reply(f"🤖 **Antigravity Agent Dispatched** (`{job_id}`)\nPrompt: `{arg}`")
+
 @bot.command(name="stream")
 async def cmd_stream(ctx: commands.Context):
     if not is_owner(ctx.author.id): return
-    url = await web_remote_server.start()
-    await ctx.reply(
-        content=f"🎮 **50 FPS Mobile Touch Remote Active:**\n👉 **`{url}`**\n*(Tap below to open directly or copy pure URL)*",
-        view=StreamLinkView(url)
+    url, pin = await web_remote_server.start()
+    embed = discord.Embed(
+        title="🎮 50 FPS Mobile Touch Remote Active",
+        description=(
+            f"👉 **[Open Remote Stream]({url})**\n`{url}`\n\n"
+            f"🔑 **One-Time Access PIN:** `{pin}`\n"
+            f"*(Enter this 6-digit PIN on the login screen to unlock)*"
+        ),
+        color=discord.Color.purple(),
+        timestamp=datetime.now()
     )
+    await ctx.reply(embed=embed, view=StreamLinkView(url, pin))
 
 @bot.command(name="remote")
 async def cmd_remote(ctx: commands.Context):
