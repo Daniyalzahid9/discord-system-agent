@@ -5,6 +5,7 @@ import ctypes
 import psutil
 import subprocess
 from datetime import datetime
+from pathlib import Path
 from PIL import Image, ImageGrab
 import pyautogui
 import discord

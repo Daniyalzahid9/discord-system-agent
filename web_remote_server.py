@@ -11,6 +11,7 @@ import urllib.parse
 from pathlib import Path
 from typing import Optional, Set, List, Tuple
 from aiohttp import web
+from PIL import ImageGrab
 import cv2
 import numpy as np
 import mss
@@ -72,16 +73,22 @@ HTML_CLIENT = """<!DOCTYPE html>
   }
 
   #canvas-container {
-    position: relative; display: flex; align-items: center; justify-content: center;
-    transform-origin: center center; will-change: transform;
+    position: relative; width: 100vw; height: 100dvh;
+    display: flex; align-items: center; justify-content: center;
+    transform-origin: center center; will-change: transform; pointer-events: none;
   }
 
   /* View Modes */
+  #screen-canvas {
+    display: block; box-shadow: 0 0 50px rgba(0, 0, 0, 0.95);
+    cursor: default; touch-action: none; image-rendering: auto; pointer-events: auto;
+    max-width: 100vw; max-height: 100dvh; width: auto; height: auto;
+  }
   #stage.mode-fit #screen-canvas {
-    max-width: 100vw; max-height: 100dvh; width: 100%; height: auto; object-fit: contain;
+    max-width: 100vw; max-height: 100dvh; width: auto; height: auto; object-fit: contain; pointer-events: auto;
   }
   #stage.mode-fill #screen-canvas {
-    width: 100vw; height: 100dvh; object-fit: fill;
+    width: 100vw; height: 100dvh; object-fit: fill; pointer-events: auto;
   }
   #stage.mode-rotated {
     transform: rotate(90deg);
@@ -93,12 +100,7 @@ HTML_CLIENT = """<!DOCTYPE html>
     left: calc((100dvw - 100dvh) / 2);
   }
   #stage.mode-rotated #screen-canvas {
-    width: 100dvh; height: 100dvw; object-fit: contain;
-  }
-
-  #screen-canvas {
-    display: block; box-shadow: 0 0 50px rgba(0, 0, 0, 0.95);
-    cursor: default; touch-action: none; image-rendering: auto;
+    width: 100dvh; height: 100dvw; object-fit: contain; pointer-events: auto;
   }
 
   /* PREDICTIVE CLIENT-SIDE HARDWARE CURSOR */
@@ -317,7 +319,7 @@ HTML_CLIENT = """<!DOCTYPE html>
 
 <div id="stage" class="mode-fit">
   <div id="canvas-container">
-    <canvas id="screen-canvas"></canvas>
+    <canvas id="screen-canvas" width="1280" height="720"></canvas>
     <!-- Predictive Hardware Cursor SVG -->
     <svg id="client-cursor" viewBox="0 0 17 22" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M0 0V17L4 13L9 21L12 20L7 12L13 12L0 0Z" fill="white" stroke="black" stroke-width="1.2"/>
@@ -332,7 +334,7 @@ HTML_CLIENT = """<!DOCTYPE html>
 <div class="hud-top" id="hud-top">
   <div class="status-badge">
     <div class="status-dot"></div>
-    <span id="fps-label">50 FPS</span>
+    <span id="fps-label">CONNECTING...</span>
   </div>
   <div class="hud-actions">
     <button class="btn-hud" id="btn-view-mode" title="Switch Aspect View Mode">📐 Fit</button>
@@ -598,30 +600,58 @@ HTML_CLIENT = """<!DOCTYPE html>
     ws = new WebSocket(wsUrl);
     ws.binaryType = 'blob';
 
-    ws.onopen = () => console.log('50 FPS Stream Connected.');
+    ws.onopen = () => {
+      console.log('50 FPS Stream Connected.');
+      document.getElementById('fps-label').textContent = 'STREAMING...';
+    };
 
     ws.onmessage = async (e) => {
       if (typeof e.data === 'string') {
-        const msg = JSON.parse(e.data);
-        if (msg.type === 'init') {
-          nativeWidth = msg.width;
-          nativeHeight = msg.height;
-          canvas.width = nativeWidth;
-          canvas.height = nativeHeight;
-        }
+        try {
+          const msg = JSON.parse(e.data);
+          if (msg.type === 'init') {
+            nativeWidth = msg.width || 1920;
+            nativeHeight = msg.height || 1080;
+            canvas.width = nativeWidth;
+            canvas.height = nativeHeight;
+          }
+        } catch (err) {}
       } else {
         if (isRenderingFrame) return;
         isRenderingFrame = true;
 
-        const img = new Image();
-        img.onload = () => {
-          if (canvas.width !== nativeWidth || canvas.height !== nativeHeight) {
-            canvas.width = nativeWidth;
-            canvas.height = nativeHeight;
+        try {
+          // Explicit MIME type ensures mobile browsers (WebKit/Blink) decode without failure
+          const blob = new Blob([e.data], { type: 'image/jpeg' });
+          if (window.createImageBitmap) {
+            const bmp = await createImageBitmap(blob);
+            if (canvas.width !== bmp.width || canvas.height !== bmp.height) {
+              canvas.width = bmp.width;
+              canvas.height = bmp.height;
+              nativeWidth = bmp.width;
+              nativeHeight = bmp.height;
+            }
+            ctx.drawImage(bmp, 0, 0);
+            bmp.close();
+          } else {
+            const img = new Image();
+            await new Promise((resolve) => {
+              img.onload = () => {
+                if (canvas.width !== img.width || canvas.height !== img.height) {
+                  canvas.width = img.width;
+                  canvas.height = img.height;
+                }
+                ctx.drawImage(img, 0, 0);
+                URL.revokeObjectURL(img.src);
+                resolve();
+              };
+              img.onerror = () => {
+                URL.revokeObjectURL(img.src);
+                resolve();
+              };
+              img.src = URL.createObjectURL(blob);
+            });
           }
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          URL.revokeObjectURL(img.src);
-          isRenderingFrame = false;
 
           frameCount++;
           const now = performance.now();
@@ -630,8 +660,11 @@ HTML_CLIENT = """<!DOCTYPE html>
             frameCount = 0;
             lastFrameTime = now;
           }
-        };
-        img.src = URL.createObjectURL(e.data);
+        } catch (err) {
+          console.error('Frame decode error:', err);
+        } finally {
+          isRenderingFrame = false;
+        }
       }
     };
 
@@ -658,6 +691,7 @@ HTML_CLIENT = """<!DOCTYPE html>
 
   function getScreenCoords(clientX, clientY) {
     const rect = canvas.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) return { x: 0, y: 0 };
     const scaleX = nativeWidth / rect.width;
     const scaleY = nativeHeight / rect.height;
     const x = Math.max(0, Math.min(nativeWidth, (clientX - rect.left) * scaleX));
@@ -756,7 +790,6 @@ HTML_CLIENT = """<!DOCTYPE html>
         const coords = getScreenCoords(t.clientX, t.clientY);
         sendWS({ type: 'mouse_move', x: coords.x, y: coords.y });
       } else if (currentScale > 1.05) {
-        // Panning works ANYWHERE on screen, including the black borders!
         panX += (t.clientX - lastTouchX);
         panY += (t.clientY - lastTouchY);
         updateTransform();
@@ -1135,14 +1168,12 @@ class WebRemoteServer:
         # Check for ChatGPT / GPT compound flows (e.g. 'open chrome and open gpt and say hi')
         has_gpt = any(g in p_low for g in ["gpt", "chatgpt", "chat gpt", "openai"])
         if has_gpt:
-            # Launch Chrome with ChatGPT or open URL
             if any(b in p_low for b in ["chrome", "browser"]):
                 os.system('start chrome.exe "https://chatgpt.com"')
             else:
                 os.startfile("https://chatgpt.com")
             await asyncio.sleep(2.8)
 
-            # Check for words to type/send to ChatGPT
             for phrase in ["say ", "type ", "write ", "ask ", "prompt "]:
                 if phrase in p_low:
                     idx = p_low.rfind(phrase) + len(phrase)
@@ -1221,81 +1252,111 @@ class WebRemoteServer:
                 await asyncio.sleep(0.5)
 
     async def _capture_stream_loop(self):
-        """Hardware-Accelerated 50 FPS Video Pipeline via OpenCV SIMD."""
+        """Hardware-Accelerated 50 FPS Video Pipeline with Dual-Engine GDI/PIL Fallback."""
         _attach_to_default_desktop()
 
-        with mss.MSS() as sct:
-            monitor = sct.monitors[1]
-            mon_left = monitor["left"]
-            mon_top = monitor["top"]
+        base_cursor = np.array([
+            [0, 0], [0, 17], [4, 13], [9, 21], [12, 20], [7, 12], [13, 12]
+        ], dtype=np.int32)
+        base_shadow = base_cursor + 1
 
-            base_cursor = np.array([
-                [0, 0], [0, 17], [4, 13], [9, 21], [12, 20], [7, 12], [13, 12]
-            ], dtype=np.int32)
-            base_shadow = base_cursor + 1
+        sct = None
+        try:
+            sct = mss.MSS()
+        except Exception:
+            pass
 
-            while self.is_running:
-                if time.time() - self.last_activity > 300 and self.active_websockets:
-                    user32.LockWorkStation()
-                    for ws in list(self.active_websockets):
-                        await ws.close()
-                    self.active_websockets.clear()
+        last_attach = time.time()
 
-                if not self.active_websockets:
-                    await asyncio.sleep(0.15)
-                    continue
+        while self.is_running:
+            if not self.active_websockets:
+                await asyncio.sleep(0.12)
+                continue
 
-                loop_start = time.time()
+            now = time.time()
+            if now - last_attach > 2.0:
+                _attach_to_default_desktop()
+                last_attach = now
+
+            loop_start = time.time()
+            frame = None
+
+            # Attempt 1: Ultra-fast mss capture
+            if sct:
                 try:
-                    sct_img = sct.grab(monitor)
+                    mon = sct.monitors[1]
+                    sct_img = sct.grab(mon)
                     raw_bgra = np.array(sct_img, dtype=np.uint8)
                     frame = raw_bgra[:, :, :3]
-
-                    try:
-                        pos = pyautogui.position()
-                        cx = int(pos.x - mon_left)
-                        cy = int(pos.y - mon_top)
-                        if 0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]:
-                            poly_cursor = base_cursor + [cx, cy]
-                            poly_shadow = base_shadow + [cx, cy]
-                            cv2.fillPoly(frame, [poly_shadow], (0, 0, 0))
-                            cv2.fillPoly(frame, [poly_cursor], (255, 255, 255))
-                            cv2.polylines(frame, [poly_cursor], True, (0, 0, 0), 1)
-                            cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
-                    except Exception:
-                        pass
-
-                    target_w = 1280
-                    target_h = int(frame.shape[0] * (target_w / frame.shape[1]))
-                    resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
-
-                    _, enc = cv2.imencode('.jpg', resized, [int(cv2.IMWRITE_JPEG_QUALITY), 62])
-                    frame_bytes = enc.tobytes()
-
-                    dead_sockets = set()
-                    for ws in list(self.active_websockets):
-                        try:
-                            await ws.send_bytes(frame_bytes)
-                        except Exception:
-                            dead_sockets.add(ws)
-
-                    self.active_websockets.difference_update(dead_sockets)
-
                 except Exception:
                     pass
 
-                elapsed = time.time() - loop_start
-                target_interval = 1.0 / 50.0
-                if target_interval > elapsed:
-                    await asyncio.sleep(target_interval - elapsed)
+            # Attempt 2: Bulletproof PIL ImageGrab fallback
+            if frame is None or frame.size == 0:
+                try:
+                    _attach_to_default_desktop()
+                    pil_img = ImageGrab.grab()
+                    frame = np.array(pil_img, dtype=np.uint8)[:, :, ::-1] # RGB to BGR
+                except Exception:
+                    pass
+
+            # Attempt 3: If screen is locked/sleeping, generate sleek lock status frame
+            if frame is None or frame.size == 0:
+                frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+                frame[:] = (18, 12, 8)
+                cv2.putText(frame, "WINDOWS DESKTOP SUSPENDED / LOCKED", (240, 320),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, "Use Touch Controls or OSK below to wake desktop", (270, 380),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (56, 189, 248), 2, cv2.LINE_AA)
+
+            try:
+                pos = pyautogui.position()
+                cx = int(pos.x)
+                cy = int(pos.y)
+                if 0 <= cx < frame.shape[1] and 0 <= cy < frame.shape[0]:
+                    poly_cursor = base_cursor + [cx, cy]
+                    poly_shadow = base_shadow + [cx, cy]
+                    cv2.fillPoly(frame, [poly_shadow], (0, 0, 0))
+                    cv2.fillPoly(frame, [poly_cursor], (255, 255, 255))
+                    cv2.polylines(frame, [poly_cursor], True, (0, 0, 0), 1)
+                    cv2.circle(frame, (cx, cy), 2, (0, 0, 255), -1)
+            except Exception:
+                pass
+
+            try:
+                if frame.shape[1] != 1280:
+                    target_w = 1280
+                    target_h = int(frame.shape[0] * (target_w / frame.shape[1]))
+                    resized = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
                 else:
-                    await asyncio.sleep(0.001)
+                    resized = frame
+
+                _, enc = cv2.imencode('.jpg', resized, [int(cv2.IMWRITE_JPEG_QUALITY), 65])
+                frame_bytes = enc.tobytes()
+
+                dead_sockets = set()
+                for ws in list(self.active_websockets):
+                    try:
+                        await ws.send_bytes(frame_bytes)
+                    except Exception:
+                        dead_sockets.add(ws)
+
+                if dead_sockets:
+                    self.active_websockets.difference_update(dead_sockets)
+            except Exception:
+                pass
+
+            elapsed = time.time() - loop_start
+            target_interval = 1.0 / 40.0
+            if target_interval > elapsed:
+                await asyncio.sleep(target_interval - elapsed)
+            else:
+                await asyncio.sleep(0.001)
 
     async def start(self) -> Tuple[str, str]:
         """Starts the server and generates a brand new dynamic token and 6-digit PIN."""
         url, pin = self.generate_session()
 
-        # Invalidate old sessions
         for ws in list(self.active_websockets):
             try:
                 await ws.close()
