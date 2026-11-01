@@ -11,8 +11,6 @@ from discord.ext import commands
 
 import config
 import system_controller as sys_ctl
-import agent_runner
-from agent_runner import multi_turn_manager
 import email_service
 from pty_manager import pty_manager
 import hardware_sensor as hw
@@ -268,17 +266,7 @@ async def on_message(message: discord.Message):
             pty_session.write_input(message.content)
             return
 
-        # 2. Route message to Multi-Turn Antigravity Agent Session if in an Agent Thread
-        agent_session = multi_turn_manager.get_session(message.channel.id)
-        if agent_session:
-            if message.content.strip().lower() in ["exit", "stop", "/stop"]:
-                multi_turn_manager.close_session(message.channel.id)
-                await message.reply("⏹️ Multi-turn agent session ended.")
-                return
-            asyncio.create_task(agent_session.run_turn(message.content))
-            return
-
-    # 3. File Upload Handler: If attachments are sent, download them to PC
+    # 2. File Upload Handler: If attachments are sent, download them to PC
     if message.attachments:
         dest_dir = Path(config.DEFAULT_WORKSPACE) / "discord_downloads"
         dest_dir.mkdir(parents=True, exist_ok=True)
@@ -357,15 +345,6 @@ async def slash_focus(interaction: discord.Interaction, window_title: str):
         return
     ok, msg = await asyncio.to_thread(ui.focus_window_by_title, window_title)
     await interaction.response.send_message(f"{'🎯' if ok else '❌'} {msg}")
-
-@bot.tree.command(name="click_ui", description="Clicks a native Windows UI button or control by its text.")
-@app_commands.describe(element_text="The text of the button or control to click (e.g. 'Save', 'Cancel', 'File')")
-async def slash_click_ui(interaction: discord.Interaction, element_text: str):
-    if not await check_auth_interaction(interaction):
-        return
-    await interaction.response.defer()
-    ok, msg = await asyncio.to_thread(ui.click_native_element, element_text)
-    await interaction.followup.send(f"{'🖱️' if ok else '❌'} {msg}")
 
 @bot.tree.command(name="window_controls", description="Lists interactive buttons and controls in the active window.")
 async def slash_window_controls(interaction: discord.Interaction):
@@ -470,32 +449,7 @@ async def slash_notifications(interaction: discord.Interaction, action: app_comm
         toast_watcher.stop()
         await interaction.response.send_message("🔕 Windows notification forwarding disabled.")
 
-# 7. MULTI-TURN ANTIGRAVITY SESSIONS
-@bot.tree.command(name="agent_chat", description="Starts a multi-turn conversation thread with the Antigravity agent.")
-@app_commands.describe(
-    prompt="Initial goal/task for the agent",
-    workspace="Workspace directory (default: your home directory)"
-)
-async def slash_agent_chat(interaction: discord.Interaction, prompt: str, workspace: Optional[str] = None):
-    if not await check_auth_interaction(interaction):
-        return
-    await interaction.response.defer()
-    
-    target_ws = workspace if workspace else config.DEFAULT_WORKSPACE
-    thread_name = f"🤖 Agent Chat: {prompt[:30]}"
-    thread = await interaction.channel.create_thread(
-        name=thread_name,
-        auto_archive_duration=60,
-        type=discord.ChannelType.public_thread
-    )
-    
-    session = multi_turn_manager.create_session(thread_id=thread.id, thread=thread, workspace=target_ws)
-    await interaction.followup.send(f"🚀 **Spawned Multi-Turn Agent Session** in thread: {thread.jump_url}\nAny reply in that thread continues the agent's work without losing memory!")
-    
-    # Run initial turn
-    asyncio.create_task(session.run_turn(prompt))
-
-# 8. ZERO-INSTALL MOBILE TOUCH REMOTE (WEBSOCKET/CANVAS)
+# ZERO-INSTALL MOBILE TOUCH REMOTE (WEBSOCKET/CANVAS)
 @bot.tree.command(name="stream", description="Starts the 50 FPS mobile web touch remote server with dynamic PIN protection.")
 async def slash_stream(interaction: discord.Interaction):
     if not await check_auth_interaction(interaction):
@@ -541,105 +495,6 @@ async def slash_stream_stop(interaction: discord.Interaction):
     await web_remote_server.stop()
     await interaction.response.send_message("🛑 Mobile touch remote server stopped.")
 
-# ----------------- ANTIGRAVITY WORKSPACE SELECTOR VIEW -----------------
-COMMON_WORKSPACES = [
-    ("Discord System Agent", r"C:\Users\daniy\discord_system_agent", "🤖"),
-    ("Claude Code Setup", r"C:\Users\daniy\OneDrive\Desktop\Antigravity\Claude-COde-Setup", "⚡"),
-    ("Desktop Folder", r"C:\Users\daniy\OneDrive\Desktop", "🖥️"),
-    ("Home Directory", r"C:\Users\daniy", "🏠"),
-]
-
-class AntigravityCustomModal(discord.ui.Modal, title="Open Custom Workspace"):
-    path_input = discord.ui.TextInput(
-        label="Directory Path on Windows PC",
-        placeholder=r"C:\Users\daniy\my_project",
-        required=True
-    )
-
-    async def on_submit(self, interaction: discord.Interaction):
-        if not await check_auth_interaction(interaction): return
-        ws_path = self.path_input.value.strip()
-        ok, msg = sys_ctl.launch_antigravity_ide(ws_path)
-        embed = discord.Embed(
-            title="🚀 Antigravity IDE Launched",
-            description=f"{'✅' if ok else '❌'} {msg}\n**Workspace:** `{ws_path}`",
-            color=discord.Color.green() if ok else discord.Color.red(),
-            timestamp=datetime.now()
-        )
-        await interaction.response.send_message(embed=embed)
-
-class AntigravityWorkspaceSelect(discord.ui.Select):
-    def __init__(self):
-        options = [
-            discord.SelectOption(label=name, value=path, description=path[:50], emoji=emoji)
-            for name, path, emoji in COMMON_WORKSPACES
-        ]
-        options.append(discord.SelectOption(label="Custom Path...", value="CUSTOM", description="Type custom directory path", emoji="✏️"))
-        super().__init__(placeholder="📁 Select workspace to open in Antigravity...", min_values=1, max_values=1, options=options)
-
-    async def callback(self, interaction: discord.Interaction):
-        if not await check_auth_interaction(interaction): return
-        val = self.values[0]
-        if val == "CUSTOM":
-            await interaction.response.send_modal(AntigravityCustomModal())
-            return
-        
-        ok, msg = sys_ctl.launch_antigravity_ide(val)
-        embed = discord.Embed(
-            title="🚀 Antigravity IDE Launched",
-            description=f"{'✅' if ok else '❌'} {msg}\n**Target Workspace:** `{val}`",
-            color=discord.Color.green() if ok else discord.Color.red(),
-            timestamp=datetime.now()
-        )
-        await interaction.response.send_message(embed=embed)
-
-class AntigravityLauncherView(discord.ui.View):
-    def __init__(self):
-        super().__init__(timeout=300)
-        self.add_item(AntigravityWorkspaceSelect())
-
-@bot.tree.command(name="antigravity", description="Controls Antigravity: launch Desktop IDE GUI with workspace selection or run tasks.")
-@app_commands.describe(
-    action="Choose what to do",
-    workspace="Target workspace path (optional - leave blank to choose from dropdown)",
-    prompt="Goal or instructions (if running autonomous task)"
-)
-@app_commands.choices(action=[
-    app_commands.Choice(name="🚀 Launch Antigravity Desktop IDE Window", value="launch_ide"),
-    app_commands.Choice(name="🤖 Run Autonomous Agent Task", value="run_task")
-])
-async def slash_antigravity(interaction: discord.Interaction, action: app_commands.Choice[str], workspace: Optional[str] = None, prompt: Optional[str] = None):
-    if not await check_auth_interaction(interaction):
-        return
-
-    if action.value == "launch_ide":
-        if workspace:
-            ok, msg = sys_ctl.launch_antigravity_ide(workspace)
-            embed = discord.Embed(
-                title="🚀 Antigravity IDE Launcher",
-                description=f"{'✅' if ok else '❌'} {msg}\n**Workspace:** `{workspace}`",
-                color=discord.Color.green() if ok else discord.Color.red(),
-                timestamp=datetime.now()
-            )
-            await interaction.response.send_message(embed=embed)
-        else:
-            embed = discord.Embed(
-                title="🚀 Select Antigravity Workspace",
-                description="Choose which workspace to open in the **Antigravity Desktop IDE** GUI on your laptop:\n\n*(Select from the menu below or choose 'Custom Path...')*",
-                color=discord.Color.blue(),
-                timestamp=datetime.now()
-            )
-            await interaction.response.send_message(embed=embed, view=AntigravityLauncherView())
-    else:
-        try:
-            await interaction.response.defer()
-        except Exception:
-            pass
-        target_ws = workspace if workspace else config.DEFAULT_WORKSPACE
-        task_prompt = prompt if prompt else "Analyze repository status and verify environment"
-        job_id = agent_runner.launch_agent_task(prompt=task_prompt, workspace=target_ws, channel=interaction.channel, email_to=config.DEFAULT_EMAIL_TO)
-        await interaction.followup.send(f"🤖 **Dispatched Antigravity Autonomous Agent** (`{job_id}`)\nWorkspace: `{target_ws}`\nTask: `{task_prompt}`")
-
 # ----------------- STANDARD CORE COMMANDS -----------------
 @bot.tree.command(name="screen", description="Captures a live screenshot of your laptop desktop.")
 @app_commands.describe(scale="Scale factor (1.0 = original, 0.5 = 50%)", quality="JPEG quality (1-100)")
@@ -680,21 +535,6 @@ async def slash_cmd(interaction: discord.Interaction, command: str, cwd: Optiona
             content=f"**Exit Code:** `{code}` (Output exceeded Discord limit, attached as file):",
             file=file
         )
-
-@bot.tree.command(name="agent", description="Runs a single-shot autonomous Antigravity agent task.")
-@app_commands.describe(
-    prompt="What should the agent do?",
-    workspace="Target directory on computer (optional)",
-    email_report="Email address to receive the final report & logs (optional)"
-)
-async def slash_agent(interaction: discord.Interaction, prompt: str, workspace: Optional[str] = None, email_report: Optional[str] = None):
-    if not await check_auth_interaction(interaction):
-        return
-    await interaction.response.defer()
-    target_ws = workspace if workspace else config.DEFAULT_WORKSPACE
-    target_email = email_report if email_report else config.DEFAULT_EMAIL_TO
-    job_id = agent_runner.launch_agent_task(prompt=prompt, workspace=target_ws, channel=interaction.channel, email_to=target_email)
-    await interaction.followup.send(f"🚀 **Dispatched Autonomous Agent** (`{job_id}`)\nWorkspace: `{target_ws}`")
 
 @bot.tree.command(name="open", description="Opens a file, app, folder, or URL on your Windows PC.")
 @app_commands.describe(target="Path to file/folder or app name/URL")
@@ -851,36 +691,11 @@ async def cmd_cmd(ctx: commands.Context, *, command: str):
         file = discord.File(fp=buf, filename="output.txt")
         await ctx.reply(content=f"**Exit Code:** `{code}` (Output attached):", file=file)
 
-@bot.command(name="agent")
-async def cmd_agent(ctx: commands.Context, *, prompt: str):
-    if not is_owner(ctx.author.id): return
-    job_id = agent_runner.launch_agent_task(prompt=prompt, workspace=config.DEFAULT_WORKSPACE, channel=ctx.channel, email_to=config.DEFAULT_EMAIL_TO)
-    await ctx.reply(f"🚀 **Agent Dispatched** (`{job_id}`)")
-
 @bot.command(name="lock")
 async def cmd_lock(ctx: commands.Context):
     if not is_owner(ctx.author.id): return
     ok, msg = sys_ctl.power_action("lock")
     await ctx.reply(f"🔒 {msg}")
-
-@bot.command(name="antigravity")
-async def cmd_antigravity(ctx: commands.Context, *, arg: str = ""):
-    if not is_owner(ctx.author.id): return
-    arg_clean = arg.strip()
-    if not arg_clean or arg_clean.lower() in ["open", "launch", "ide", "start", "gui"]:
-        embed = discord.Embed(
-            title="🚀 Select Antigravity Workspace",
-            description="Choose which workspace to open in the **Antigravity Desktop IDE** window on your laptop:",
-            color=discord.Color.blue(),
-            timestamp=datetime.now()
-        )
-        await ctx.reply(embed=embed, view=AntigravityLauncherView())
-    elif os.path.isdir(arg_clean):
-        ok, msg = sys_ctl.launch_antigravity_ide(arg_clean)
-        await ctx.reply(f"{'🚀' if ok else '❌'} {msg}\n**Workspace:** `{arg_clean}`")
-    else:
-        job_id = agent_runner.launch_agent_task(prompt=arg, workspace=config.DEFAULT_WORKSPACE, channel=ctx.channel, email_to=config.DEFAULT_EMAIL_TO)
-        await ctx.reply(f"🤖 **Antigravity Agent Dispatched** (`{job_id}`)\nPrompt: `{arg}`")
 
 @bot.command(name="stream")
 async def cmd_stream(ctx: commands.Context):

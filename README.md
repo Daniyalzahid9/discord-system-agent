@@ -37,10 +37,9 @@
 - Spawns a dedicated Discord Thread running a live, persistent PowerShell or CMD instance via `pywinpty`.
 - Type commands directly in the thread (e.g., `git commit`, `npm start`, `cd ..`) with live ANSI terminal output streaming back.
 
-### 🎯 5. Windows Accessibility UI Automation (`/focus`, `/click_ui`)
-- Snaps into native Windows UI controls via `pywinauto` without guessing pixel coordinates.
-- `/focus <window_name>`: Brings any app to the foreground.
-- `/click_ui <button_name>`: Clicks buttons, tabs, or menus by their text label.
+### 🎯 5. Windows Window Automation (`/focus`)
+- Snaps into native Windows UI windows via `pywinauto`.
+- `/focus <window_name>`: Brings any app or browser to the foreground.
 
 ### 👁️ 6. Hardware Sensors & Physical Presence
 - **Webcam Snapshot (`/webcam`):** Capture photos from your laptop camera.
@@ -66,8 +65,8 @@
 
 ### Step 1: Clone the Repository
 ```bash
-git clone https://github.com/yourusername/sentient-desktop-controller.git
-cd sentient-desktop-controller
+git clone https://github.com/Daniyalzahid9/discord-system-agent.git
+cd discord-system-agent
 ```
 
 ### Step 2: Set Up Virtual Environment & Dependencies
@@ -101,14 +100,13 @@ DEFAULT_WORKSPACE=C:\Users\yourusername
 | Slash Command | Text Prefix | Description |
 |---|---|---|
 | `/remote` | `!remote` | Discord Native Controller (Zero browser, 100% in app) |
-| `/stream` | `!stream` | 50 FPS OpenCV Touch Remote with pinch-to-zoom & mousepad |
+| `/stream` | `!stream` | 50 FPS OpenCV Touch Remote with pinch-to-zoom, mousepad & Stop button |
 | `/stream_stop` | - | Shuts down active web stream |
 | `/shell start [type]` | `!shell` | Starts persistent interactive terminal thread |
 | `/shell stop` | `exit` | Closes terminal session |
 | `/screen` | `!screen` | Instant desktop screenshot with cursor overlay |
 | `/status` | `!status` | Hardware metrics (CPU, RAM, Disk, Battery, Uptime) |
 | `/focus <title>` | - | Brings target window to foreground |
-| `/click_ui <text>` | - | Clicks native Windows UI button/control by text |
 | `/clip get` | `!clip get` | Reads laptop clipboard to mobile Discord |
 | `/clip set <text>` | `!clip set <text>` | Sets laptop clipboard from mobile |
 | `/webcam` | `!webcam` | Takes front camera photo |

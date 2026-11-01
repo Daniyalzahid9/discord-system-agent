@@ -129,6 +129,8 @@ HTML_CLIENT = """<!DOCTYPE html>
   }
   .btn-hud:active { background: rgba(59, 130, 246, 0.4); transform: scale(0.95); }
   .btn-hud.active { background: #3b82f6; border-color: #60a5fa; color: #fff; }
+  .btn-hud.danger { background: rgba(239, 68, 68, 0.18); border-color: rgba(239, 68, 68, 0.4); color: #fca5a5; }
+  .btn-hud.danger:active { background: #ef4444; color: #fff; }
 
   /* RESTORE HUD BUTTON (FOR FULLSCREEN) */
   #btn-hud-restore {
@@ -342,6 +344,7 @@ HTML_CLIENT = """<!DOCTYPE html>
     <button class="btn-hud" id="btn-zoom-reset" title="Reset Zoom">🔍 1.0x</button>
     <button class="btn-hud" id="btn-mousepad-toggle" title="Toggle Mousepad">🖱️ Pad</button>
     <button class="btn-hud" id="btn-fullscreen" title="Immersive Fullscreen">⛶ Full</button>
+    <button class="btn-hud danger" id="btn-stop-stream" title="Stop & Disconnect Remote Stream">🛑 Stop</button>
   </div>
 </div>
 
@@ -669,10 +672,31 @@ HTML_CLIENT = """<!DOCTYPE html>
     };
 
     ws.onclose = () => {
+      if (window.streamStoppedManually) {
+        document.getElementById('fps-label').textContent = 'STOPPED';
+        return;
+      }
       document.getElementById('fps-label').textContent = 'RECONNECTING...';
-      setTimeout(() => { if (verifiedPin) connect(verifiedPin); }, 1500);
+      setTimeout(() => { if (verifiedPin && !window.streamStoppedManually) connect(verifiedPin); }, 1500);
     };
   }
+
+  function stopStream() {
+    if (confirm('Stop the remote stream server?')) {
+      window.streamStoppedManually = true;
+      sendWS({ type: 'stop_stream' });
+      document.getElementById('fps-label').textContent = 'STREAM STOPPED';
+      const dot = document.querySelector('.status-dot');
+      if (dot) { dot.style.background = '#ef4444'; dot.style.boxShadow = '0 0 10px #ef4444'; }
+      if (ws) {
+        try { ws.close(); } catch(e) {}
+      }
+      setTimeout(() => {
+        alert('Remote stream has been stopped on your PC.');
+      }, 300);
+    }
+  }
+  document.getElementById('btn-stop-stream').addEventListener('click', stopStream);
 
   function sendWS(data) {
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -1146,6 +1170,9 @@ class WebRemoteServer:
         elif event_type == "power":
             if data.get("action") == "lock":
                 user32.LockWorkStation()
+
+        elif event_type == "stop_stream":
+            asyncio.create_task(self.stop())
 
         elif event_type == "ai_action":
             prompt = data.get("prompt", "")
